@@ -2,6 +2,8 @@ package goobs
 
 import (
 	"context"
+	"errors"
+	"sync"
 
 	"go.opentelemetry.io/otel"
 	otlploggrpc "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
@@ -20,10 +22,11 @@ import (
 
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 )
 
 var (
+	initMu            sync.RWMutex
+	initialized       bool
 	globalCfg         Config
 	globalTP          *sdktrace.TracerProvider
 	globalMP          *sdkmetric.MeterProvider
@@ -34,7 +37,22 @@ var (
 	globalMeter       metric.Meter
 )
 
+func getGlobals() (Config, otellog.Logger, *zap.Logger, propagation.TextMapPropagator, metric.Meter) {
+	initMu.RLock()
+	defer initMu.RUnlock()
+	return globalCfg, globalOtelLogger, globalLogger, globalPropagator, globalMeter
+}
+
 func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) {
+	initMu.Lock()
+	defer initMu.Unlock()
+
+	if initialized {
+		if err := shutdownProviders(ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	globalCfg = cfg
 
 	res, err := resource.New(
@@ -52,7 +70,6 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 		ctx,
 		otlpgrpc.WithEndpoint(cfg.OtelEndpoint),
 		otlpgrpc.WithInsecure(),
-		otlpgrpc.WithDialOption(grpc.WithBlock()),
 	)
 	if err != nil {
 		return nil, err
@@ -69,7 +86,6 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 			ctx,
 			otlpmetricgrpc.WithEndpoint(cfg.OtelEndpoint),
 			otlpmetricgrpc.WithInsecure(),
-			otlpmetricgrpc.WithDialOption(grpc.WithBlock()),
 		)
 		if err != nil {
 			return nil, err
@@ -81,14 +97,13 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 			sdkmetric.WithResource(res),
 		)
 		otel.SetMeterProvider(globalMP)
-		globalMeter = globalMP.Meter("eto")
+		globalMeter = globalMP.Meter(cfg.ServiceName)
 	}
 
 	logExp, err := otlploggrpc.New(
 		ctx,
 		otlploggrpc.WithEndpoint(cfg.OtelEndpoint),
 		otlploggrpc.WithInsecure(),
-		otlploggrpc.WithDialOption(grpc.WithBlock()),
 	)
 	if err != nil {
 		return nil, err
@@ -100,7 +115,7 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 	)
 	logglobal.SetLoggerProvider(globalLogProvider)
 
-	globalOtelLogger = globalLogProvider.Logger("eto")
+	globalOtelLogger = globalLogProvider.Logger(cfg.ServiceName)
 
 	propagator := propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
@@ -114,22 +129,39 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 		return nil, err
 	}
 	globalLogger = logger
+	initialized = true
 
 	shutdown := func(ctx context.Context) error {
-		if globalTP != nil {
-			_ = globalTP.Shutdown(ctx)
-		}
-		if globalMP != nil {
-			_ = globalMP.Shutdown(ctx)
-		}
-		if globalLogProvider != nil {
-			_ = globalLogProvider.Shutdown(ctx)
-		}
-		if globalLogger != nil {
-			_ = globalLogger.Sync()
-		}
-		return nil
+		initMu.Lock()
+		defer initMu.Unlock()
+		err := shutdownProviders(ctx)
+		initialized = false
+		return err
 	}
 
 	return shutdown, nil
+}
+
+func shutdownProviders(ctx context.Context) error {
+	var errs []error
+	if globalTP != nil {
+		errs = append(errs, globalTP.Shutdown(ctx))
+		globalTP = nil
+	}
+	if globalMP != nil {
+		errs = append(errs, globalMP.Shutdown(ctx))
+		globalMP = nil
+	}
+	if globalLogProvider != nil {
+		errs = append(errs, globalLogProvider.Shutdown(ctx))
+		globalLogProvider = nil
+	}
+	if globalLogger != nil {
+		_ = globalLogger.Sync()
+		globalLogger = nil
+	}
+	globalOtelLogger = nil
+	globalPropagator = nil
+	globalMeter = nil
+	return errors.Join(errs...)
 }

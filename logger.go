@@ -72,6 +72,13 @@ func (b *LogObs) Field(key string, val any) *LogObs {
 	return b
 }
 
+func (b *LogObs) Err(err error) *LogObs {
+	if err != nil {
+		b.fields = append(b.fields, zap.Error(err))
+	}
+	return b
+}
+
 func (b *LogObs) Fields(fields ...zap.Field) *LogObs {
 	b.fields = append(b.fields, fields...)
 	return b
@@ -143,13 +150,15 @@ func useFrame(frame runtime.Frame) bool {
 		return false
 	}
 
-	for _, p := range globalCfg.SkipCallerPkgs {
+	cfg, _, _, _, _ := getGlobals()
+
+	for _, p := range cfg.SkipCallerPkgs {
 		if p != "" && strings.HasPrefix(frame.Function, p) {
 			return false
 		}
 	}
 
-	for _, f := range globalCfg.SkipCallerFiles {
+	for _, f := range cfg.SkipCallerFiles {
 		if f != "" && strings.Contains(frame.File, f) {
 			return false
 		}
@@ -181,9 +190,12 @@ func (b *LogObs) Send() {
 
 	span := trace.SpanFromContext(ctx)
 	sc := span.SpanContext()
+	caller := logCaller()
+
+	_, otelLogger, zapLogger, _, _ := getGlobals()
 
 	// ====== OTEL Logs ======
-	if globalOtelLogger != nil {
+	if otelLogger != nil {
 		var rec otellog.Record
 
 		rec.SetSeverity(b.otelSeverity())
@@ -194,7 +206,6 @@ func (b *LogObs) Send() {
 			rec.AddAttributes(a)
 		}
 
-		// trace/span id
 		if sc.IsValid() {
 			rec.AddAttributes(
 				otellog.String("trace_id", sc.TraceID().String()),
@@ -202,8 +213,7 @@ func (b *LogObs) Send() {
 			)
 		}
 
-		// caller
-		if caller := logCaller(); caller != "" {
+		if caller != "" {
 			rec.AddAttributes(otellog.String("caller", caller))
 		}
 
@@ -211,11 +221,11 @@ func (b *LogObs) Send() {
 		rec.SetTimestamp(now)
 		rec.SetObservedTimestamp(now)
 
-		globalOtelLogger.Emit(ctx, rec)
+		otelLogger.Emit(ctx, rec)
 	}
 
 	// ====== Zap logger ======
-	if globalLogger == nil {
+	if zapLogger == nil {
 		return
 	}
 
@@ -226,19 +236,19 @@ func (b *LogObs) Send() {
 		)
 	}
 
-	if caller := logCaller(); caller != "" {
+	if caller != "" {
 		b.fields = append(b.fields, zap.String("caller", caller))
 	}
 
 	switch b.level {
 	case levelDebug:
-		globalLogger.Debug(msg, b.fields...)
+		zapLogger.Debug(msg, b.fields...)
 	case levelInfo:
-		globalLogger.Info(msg, b.fields...)
+		zapLogger.Info(msg, b.fields...)
 	case levelWarn:
-		globalLogger.Warn(msg, b.fields...)
+		zapLogger.Warn(msg, b.fields...)
 	case levelError:
-		globalLogger.Error(msg, b.fields...)
+		zapLogger.Error(msg, b.fields...)
 	}
 }
 
@@ -256,9 +266,15 @@ func zapFieldsToOtelAttrs(fields []zap.Field) []otellog.KeyValue {
 			attrs = append(attrs, otellog.Int64(f.Key, f.Integer))
 		case zapcore.TimeType:
 			attrs = append(attrs, otellog.Int64(f.Key, f.Integer))
+		case zapcore.ErrorType:
+			if f.Interface != nil {
+				attrs = append(attrs, otellog.String(f.Key, fmt.Sprintf("%v", f.Interface)))
+			}
 		default:
 			if f.String != "" {
 				attrs = append(attrs, otellog.String(f.Key, f.String))
+			} else if f.Interface != nil {
+				attrs = append(attrs, otellog.String(f.Key, fmt.Sprintf("%v", f.Interface)))
 			}
 		}
 	}

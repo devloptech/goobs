@@ -132,7 +132,7 @@ func (b *TraceObs) StartScope() *SpanScope {
 
 func (b *TraceObs) Run(fn func(ctx context.Context) error) error {
 	if fn == nil {
-		return errors.New("eto.Trace().Run: fn is nil")
+		return errors.New("goobs.Trace().Run: fn is nil")
 	}
 
 	ctx, span := b.Start()

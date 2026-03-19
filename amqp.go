@@ -53,19 +53,21 @@ func AMQPConsumerInterceptor(serviceName string, handler AMQPConsumeHandler) fun
 }
 
 func (p *PropagationObs) FromAMQP(headers amqp.Table) context.Context {
-	if globalPropagator == nil {
+	_, _, _, prop, _ := getGlobals()
+	if prop == nil {
 		return p.ctx
 	}
 	carrier := amqpHeaderCarrier(headers)
-	return globalPropagator.Extract(p.ctx, carrier)
+	return prop.Extract(p.ctx, carrier)
 }
 
 func (p *PropagationObs) ToAMQP(headers amqp.Table) {
-	if globalPropagator == nil {
+	_, _, _, prop, _ := getGlobals()
+	if prop == nil {
 		return
 	}
 	carrier := amqpHeaderCarrier(headers)
-	globalPropagator.Inject(p.ctx, carrier)
+	prop.Inject(p.ctx, carrier)
 
 	if !p.useLegacy {
 		return

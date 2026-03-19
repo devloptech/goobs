@@ -13,7 +13,6 @@ import (
 type PropagationObs struct {
 	ctx       context.Context
 	useLegacy bool
-	err       interface{}
 }
 
 func Propagate() *PropagationObs {
@@ -36,18 +35,24 @@ func (p *PropagationObs) WithLegacyHeaders(enable bool) *PropagationObs {
 
 // ---------- HTTP Inbound ----------
 func (p *PropagationObs) FromHTTPRequest(r *http.Request) context.Context {
-	if globalPropagator == nil {
+	_, _, _, prop, _ := getGlobals()
+	if prop == nil {
 		return r.Context()
 	}
-	return globalPropagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	baseCtx := p.ctx
+	if baseCtx == nil {
+		baseCtx = r.Context()
+	}
+	return prop.Extract(baseCtx, propagation.HeaderCarrier(r.Header))
 }
 
 // ---------- HTTP Outbound ----------
 func (p *PropagationObs) ToHTTPRequest(r *http.Request) {
-	if globalPropagator == nil {
+	_, _, _, prop, _ := getGlobals()
+	if prop == nil {
 		return
 	}
-	globalPropagator.Inject(p.ctx, propagation.HeaderCarrier(r.Header))
+	prop.Inject(p.ctx, propagation.HeaderCarrier(r.Header))
 
 	if !p.useLegacy {
 		return
@@ -106,22 +111,24 @@ func (c metadataCarrier) Keys() []string {
 }
 
 func (p *PropagationObs) FromGRPCMetadata(ctx context.Context, md metadata.MD) context.Context {
-	if globalPropagator == nil {
+	_, _, _, prop, _ := getGlobals()
+	if prop == nil {
 		return ctx
 	}
 	carrier := metadataCarrier{md}
-	return globalPropagator.Extract(ctx, carrier)
+	return prop.Extract(ctx, carrier)
 }
 
 func (p *PropagationObs) ToGRPCMetadata(md *metadata.MD) {
-	if globalPropagator == nil || md == nil {
+	_, _, _, prop, _ := getGlobals()
+	if prop == nil || md == nil {
 		return
 	}
 	if *md == nil {
 		*md = metadata.MD{}
 	}
 	carrier := metadataCarrier{*md}
-	globalPropagator.Inject(p.ctx, carrier)
+	prop.Inject(p.ctx, carrier)
 }
 
 // ---------- AMQP (RabbitMQ) ----------
