@@ -228,6 +228,223 @@ Fluent Builders:
 | `google.golang.org/grpc` | OTLP gRPC transport |
 | `github.com/rabbitmq/amqp091-go` | AMQP carrier สำหรับ context propagation |
 
+---
+
+## API Reference
+
+### Init
+
+| Function | Signature | คำอธิบาย |
+|---|---|---|
+| `Init` | `Init(ctx context.Context, cfg Config) (func(context.Context) error, error)` | ตั้งค่า provider ทั้งหมด (Trace, Metric, Log) คืน shutdown function กลับมา เรียกซ้ำได้ — จะ shutdown provider เดิมก่อนสร้างใหม่ |
+
+---
+
+### Log() → `*LogObs`
+
+สร้าง structured log ที่เขียนไปทั้ง OTel Log Exporter และ Zap พร้อมกัน แนบ `trace_id`/`span_id` อัตโนมัติจาก context
+
+| Method | Signature | คำอธิบาย |
+|---|---|---|
+| `Log` | `Log() *LogObs` | สร้าง builder ใหม่ (default: Info level) |
+| `FromContext` | `.FromContext(ctx context.Context) *LogObs` | แนบ context เพื่อดึง trace/span ID อัตโนมัติ |
+| `Debug` | `.Debug() *LogObs` | ตั้ง level เป็น DEBUG |
+| `Info` | `.Info() *LogObs` | ตั้ง level เป็น INFO (default) |
+| `Warn` | `.Warn() *LogObs` | ตั้ง level เป็น WARN |
+| `Error` | `.Error() *LogObs` | ตั้ง level เป็น ERROR |
+| `Msg` | `.Msg(msg string) *LogObs` | ตั้งข้อความ log |
+| `Field` | `.Field(key string, val any) *LogObs` | เพิ่ม field เดียว (รองรับ `string`, `int`, `int64`, `float64`, `bool`, `any`) |
+| `Fields` | `.Fields(fields ...zap.Field) *LogObs` | เพิ่มหลาย field แบบ `zap.Field` |
+| `Err` | `.Err(err error) *LogObs` | เพิ่ม error field (ถ้า `err != nil`) |
+| **`Send`** | **`.Send()`** | **Terminal** — ส่ง log ออกไปทั้ง OTel และ Zap |
+
+```go
+goobs.Log().
+    FromContext(ctx).
+    Warn().
+    Msg("high latency").
+    Field("latency_ms", 1500).
+    Err(err).
+    Send()
+```
+
+---
+
+### Trace() → `*TraceObs`
+
+สร้าง distributed tracing span มี 3 โหมด terminal
+
+| Method | Signature | คำอธิบาย |
+|---|---|---|
+| `Trace` | `Trace() *TraceObs` | สร้าง builder ใหม่ (default: `SpanKindInternal`, tracer `"goobs"`) |
+| `Name` | `.Name(name string) *TraceObs` | ตั้งชื่อ span |
+| `FromContext` | `.FromContext(ctx context.Context) *TraceObs` | แนบ context (เชื่อมกับ parent span) |
+| `Kind` | `.Kind(kind trace.SpanKind) *TraceObs` | ตั้ง span kind เช่น `SpanKindServer`, `SpanKindClient`, `SpanKindConsumer` |
+| `TracerName` | `.TracerName(name string) *TraceObs` | ตั้งชื่อ tracer (default: `"goobs"`) |
+| `Attr` | `.Attr(key string, val any) *TraceObs` | เพิ่ม attribute (รองรับ `string`, `int`, `int64`, `float64`, `bool`, `any`) |
+| `Attrs` | `.Attrs(attrs ...attribute.KeyValue) *TraceObs` | เพิ่มหลาย attribute แบบ OTel `attribute.KeyValue` |
+| `RecordError` | `.RecordError(enable bool) *TraceObs` | เปิด/ปิดบันทึก error บน span (default: `true`) |
+| `SetStatusOnError` | `.SetStatusOnError(enable bool) *TraceObs` | เปิด/ปิดตั้ง status เป็น Error เมื่อ error (default: `true`) |
+| **`Start`** | **`.Start() (context.Context, trace.Span)`** | **Terminal** — คืน ctx + span ต้องเรียก `span.End()` เอง |
+| **`StartScope`** | **`.StartScope() *SpanScope`** | **Terminal** — คืน `SpanScope` เรียก `.Done()` เพื่อจบ span |
+| **`Run`** | **`.Run(fn func(ctx context.Context) error) error`** | **Terminal** — รัน function ภายใน span จบ span และบันทึก error อัตโนมัติ |
+
+#### SpanScope
+
+| Method | Signature | คำอธิบาย |
+|---|---|---|
+| `Ctx` | `.Ctx() context.Context` | คืน context ที่มี span อยู่ |
+| `Span` | `.Span() trace.Span` | คืน `trace.Span` สำหรับเพิ่ม attribute/event เอง |
+| `Done` | `.Done()` | จบ span |
+
+```go
+// Run — สะดวกที่สุด
+err := goobs.Trace().Name("send.email").FromContext(ctx).
+    Run(func(ctx context.Context) error {
+        return emailService.Send(ctx, to, body)
+    })
+
+// StartScope — ควบคุมปานกลาง
+scope := goobs.Trace().Name("process").FromContext(ctx).StartScope()
+defer scope.Done()
+doWork(scope.Ctx())
+
+// Start — ควบคุมเต็มที่
+ctx, span := goobs.Trace().Name("db.query").FromContext(ctx).Start()
+defer span.End()
+```
+
+---
+
+### MetricCounter() → `*CounterObs`
+
+Counter สำหรับนับจำนวน (เพิ่มขึ้นอย่างเดียว) No-op เมื่อ `EnableMetrics: false`
+
+| Method | Signature | คำอธิบาย |
+|---|---|---|
+| `MetricCounter` | `MetricCounter(name string) *CounterObs` | สร้าง builder (default unit: `"1"`) |
+| `Attr` | `.Attr(key string, val any) *CounterObs` | เพิ่ม attribute |
+| `Attrs` | `.Attrs(attrs ...attribute.KeyValue) *CounterObs` | เพิ่มหลาย attribute |
+| `Unit` | `.Unit(unit string) *CounterObs` | ตั้งหน่วย เช่น `"1"`, `"requests"` |
+| `Description` | `.Description(desc string) *CounterObs` | ตั้งคำอธิบาย metric |
+| **`Add`** | **`.Add(ctx context.Context, value int64)`** | **Terminal** — เพิ่มค่า counter |
+
+```go
+goobs.MetricCounter("http_requests_total").
+    Attr("method", "GET").
+    Attr("status", 200).
+    Add(ctx, 1)
+```
+
+---
+
+### MetricHistogram() → `*HistogramObs`
+
+Histogram สำหรับวัดการกระจายของค่า (เช่น latency, request size) No-op เมื่อ `EnableMetrics: false`
+
+| Method | Signature | คำอธิบาย |
+|---|---|---|
+| `MetricHistogram` | `MetricHistogram(name string) *HistogramObs` | สร้าง builder (default unit: `"ms"`) |
+| `Attr` | `.Attr(key string, val any) *HistogramObs` | เพิ่ม attribute |
+| `Attrs` | `.Attrs(attrs ...attribute.KeyValue) *HistogramObs` | เพิ่มหลาย attribute |
+| `Unit` | `.Unit(unit string) *HistogramObs` | ตั้งหน่วย เช่น `"ms"`, `"bytes"` |
+| `Description` | `.Description(desc string) *HistogramObs` | ตั้งคำอธิบาย metric |
+| **`Record`** | **`.Record(ctx context.Context, value float64)`** | **Terminal** — บันทึกค่า |
+
+```go
+goobs.MetricHistogram("http_request_duration_ms").
+    Attr("method", "POST").
+    Record(ctx, 42.5)
+```
+
+---
+
+### MetricGauge() → `*GaugeObs`
+
+Gauge สำหรับวัดค่าปัจจุบันที่ขึ้นหรือลงได้ (เช่น active connections, queue depth) No-op เมื่อ `EnableMetrics: false`
+
+| Method | Signature | คำอธิบาย |
+|---|---|---|
+| `MetricGauge` | `MetricGauge(name string) *GaugeObs` | สร้าง builder (default unit: `"1"`) |
+| `Attr` | `.Attr(key string, val any) *GaugeObs` | เพิ่ม attribute |
+| `Attrs` | `.Attrs(attrs ...attribute.KeyValue) *GaugeObs` | เพิ่มหลาย attribute |
+| `Unit` | `.Unit(unit string) *GaugeObs` | ตั้งหน่วย |
+| `Description` | `.Description(desc string) *GaugeObs` | ตั้งคำอธิบาย metric |
+| **`Record`** | **`.Record(ctx context.Context, value float64)`** | **Terminal** — บันทึกค่าปัจจุบัน |
+
+```go
+goobs.MetricGauge("active_connections").
+    Attr("service", "api").
+    Record(ctx, float64(pool.ActiveCount()))
+```
+
+---
+
+### Propagate() → `*PropagationObs`
+
+ส่งต่อ trace context ข้าม service ผ่าน HTTP, gRPC, และ AMQP
+
+| Method | Signature | คำอธิบาย |
+|---|---|---|
+| `Propagate` | `Propagate() *PropagationObs` | สร้าง builder |
+| `FromContext` | `.FromContext(ctx context.Context) *PropagationObs` | แนบ context ที่มี span |
+| `WithLegacyHeaders` | `.WithLegacyHeaders(enable bool) *PropagationObs` | เปิด/ปิด legacy headers (`x-trace-id`, `x-span-id`) |
+
+#### HTTP
+
+| Method | Signature | คำอธิบาย |
+|---|---|---|
+| **`FromHTTPRequest`** | **`.FromHTTPRequest(r *http.Request) context.Context`** | **Inbound** — ดึง trace context จาก HTTP request headers คืน context ใหม่ |
+| **`ToHTTPRequest`** | **`.ToHTTPRequest(r *http.Request)`** | **Outbound** — ฉีด trace context เข้า HTTP request headers |
+| **`ToHTTPResponse`** | **`.ToHTTPResponse(w http.ResponseWriter)`** | **Response** — เพิ่ม `x-trace-id`/`x-span-id` ลง response headers |
+
+#### gRPC
+
+| Method | Signature | คำอธิบาย |
+|---|---|---|
+| **`FromGRPCMetadata`** | **`.FromGRPCMetadata(ctx context.Context, md metadata.MD) context.Context`** | **Inbound** — ดึง trace context จาก gRPC metadata |
+| **`ToGRPCMetadata`** | **`.ToGRPCMetadata(md *metadata.MD)`** | **Outbound** — ฉีด trace context เข้า gRPC metadata |
+
+#### AMQP (RabbitMQ)
+
+| Method | Signature | คำอธิบาย |
+|---|---|---|
+| **`FromAMQP`** | **`.FromAMQP(headers amqp.Table) context.Context`** | **Inbound** — ดึง trace context จาก AMQP message headers |
+| **`ToAMQP`** | **`.ToAMQP(headers amqp.Table)`** | **Outbound** — ฉีด trace context เข้า AMQP message headers |
+
+---
+
+### AMQPConsumerInterceptor
+
+| Function | Signature | คำอธิบาย |
+|---|---|---|
+| `AMQPConsumerInterceptor` | `AMQPConsumerInterceptor(serviceName string, handler AMQPConsumeHandler) func(msg amqp.Delivery)` | สร้าง interceptor สำเร็จรูปที่ครอบ AMQP consumer handler |
+
+โดย `AMQPConsumeHandler` คือ `func(ctx context.Context, msg amqp.Delivery) error`
+
+**สิ่งที่ interceptor ทำอัตโนมัติ:**
+
+| สิ่งที่ทำ | รายละเอียด |
+|---|---|
+| Context propagation | ดึง trace context จาก AMQP message headers |
+| Tracing | สร้าง span `"amqp.consume"` (`SpanKindConsumer`) พร้อม attributes `amqp.queue`, `amqp.exchange` |
+| Error recording | บันทึก error บน span ถ้า handler return error |
+| Counter metric | `amqp_consume_total` แยกตาม `service`, `queue`, `status` |
+| Histogram metric | `amqp_consume_duration_ms` แยกตาม `service`, `queue`, `status` |
+
+```go
+wrapped := goobs.AMQPConsumerInterceptor("order-service",
+    func(ctx context.Context, msg amqp.Delivery) error {
+        return processMessage(ctx, msg)
+    },
+)
+
+msgs, _ := ch.Consume("orders", "", true, false, false, false, nil)
+for msg := range msgs {
+    wrapped(msg)
+}
+```
+
 ## สัญญาอนุญาต
 
 MIT
