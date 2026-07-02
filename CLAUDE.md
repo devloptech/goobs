@@ -66,10 +66,11 @@ These are commitments made to consumers — break them silently and the cartoon 
 - `Propagate().FromHTTPRequest(r)` reads the standard `traceparent` header; legacy `x-trace-id`/`x-span-id` are an opt-in via `.WithLegacyHeaders(true)`.
 - ⚠️ `ToHTTPResponse(w)` is **asymmetric vs `ToHTTPRequest`** — it writes ONLY `x-trace-id` + `x-span-id` (legacy), NOT W3C `traceparent`. This is intentional today for cartoon-office's response-header reader; document loudly before refactoring.
 
-### 3. Relationship to cartoon (read this — it changed 2026-06-10)
+### 3. Relationship to cartoon (updated 2026-07-02 — dependency being removed)
 - The workspace's older "cartoon imports goobs as its facade" claim is **false**. cartoon has its own OTel facade at `cartoon/internal/utils/obs/` (13 files) that does NOT wrap goobs.
-- cartoon's only goobs import is `cartoon/internal/apis/middleware/monitoring.go` (HTTP propagation) — and that path is currently a no-op because `goobs.Init` is never called from cartoon.
-- cartoon pins **goobs v0.0.1** (2026-02-14); HEAD here is **v0.1.0** (added mutex-safe globals, idempotent `Init`, `Err(err)` builder, `MetricGauge`). The bump is safe (no API break on the surface cartoon uses) but not required — there is no automatic bump-pair contract today. See workspace CLAUDE.md §4.
+- **cartoon's branch `fix/cartoon-open-drift` (unmerged as of 2026-07-02) removes goobs from cartoon's `go.mod` entirely.** `monitoring.go` now uses cartoon's own obs facade (`obs.ExtractHTTPHeaders` inbound; `obs.WriteTraceResponseHeaders` reproduces the legacy `x-trace-id`/`x-span-id` response headers in-repo, byte-equivalent). **Once that branch merges, goobs has ZERO downstream consumers — API changes then break nobody.**
+- Historical record (holds only until that merge): cartoon's only goobs import was `cartoon/internal/apis/middleware/monitoring.go` (HTTP propagation) — a no-op in practice because `goobs.Init` was never called from cartoon. cartoon pinned **goobs v0.0.1** (2026-02-14) while HEAD here is **v0.1.0** (mutex-safe globals, idempotent `Init`, `Err(err)` builder, `MetricGauge`); there was never an automatic bump-pair contract. See workspace CLAUDE.md §4.
+- Contracts §1 (`service.namespace` omission / bare `job` label) and §2 (`ToHTTPResponse` legacy-header asymmetry) remain documented for any FUTURE consumer — the same expectations now live in cartoon's own facade, so keep the notes as design rationale even with no importer.
 
 ## Custom Agents
 
