@@ -17,9 +17,9 @@ import (
 )
 
 type testEnv struct {
-	SpanExporter  *tracetest.InMemoryExporter
-	MetricReader  *sdkmetric.ManualReader
-	LogExporter   *inMemoryLogExporter
+	SpanExporter   *tracetest.InMemoryExporter
+	MetricReader   *sdkmetric.ManualReader
+	LogExporter    *inMemoryLogExporter
 	TracerProvider *sdktrace.TracerProvider
 	MeterProvider  *sdkmetric.MeterProvider
 	LogProvider    *sdklog.LoggerProvider
